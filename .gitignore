@@ -1,0 +1,22 @@
+# Go
+bin/
+coverage*/
+*.out
+coverage.html
+*.coverprofile
+
+# Env/secrets
+.env
+.env.*
+.envrc
+
+# Output
+conversation*.json
+*.log
+tmp/
+temp/
+
+# OS/editor
+.DS_Store
+.vscode/
+*.code-workspace
