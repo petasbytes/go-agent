@@ -11,7 +11,7 @@ type ToolDefinition struct {
 	Name        string                         `json:"name"`
 	Description string                         `json:"description"`
 	InputSchema anthropic.ToolInputSchemaParam `json:"input_schema"`
-	Handle      func(input json.RawMessage) (string, error)
+	Function    func(input json.RawMessage) (string, error)
 }
 
 func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
