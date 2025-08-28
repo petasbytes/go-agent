@@ -3,7 +3,6 @@ package tools
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 )
 
 type ListFilesInput struct {
@@ -12,7 +11,7 @@ type ListFilesInput struct {
 
 var ListFilesDefinition = ToolDefinition{
 	Name:        "list_files",
-	Description: "List names in a directory (non-recursive).",
+	Description: "List names of files in a directory (non-recursive).",
 	InputSchema: ListFilesInputSchema,
 	Function:    ListFiles,
 }
@@ -20,46 +19,33 @@ var ListFilesDefinition = ToolDefinition{
 var ListFilesInputSchema = GenerateSchema[ListFilesInput]()
 
 func ListFiles(input json.RawMessage) (string, error) {
-	listFilesInput := ListFilesInput{}
-	err := json.Unmarshal(input, &listFilesInput)
-	if err != nil {
-		panic(err)
+	var in ListFilesInput
+	if err := json.Unmarshal(input, &in); err != nil {
+		return "", err
 	}
 
 	dir := "."
-	if listFilesInput.Path != "" {
-		dir = listFilesInput.Path
+	if in.Path != "" {
+		dir = in.Path
 	}
 
-	var files []string
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		relPath, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-
-		if relPath != "." {
-			if info.IsDir() {
-				files = append(files, relPath+"/")
-			} else {
-				files = append(files, relPath)
-			}
-		}
-		return nil
-	})
-
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", err
 	}
 
-	result, err := json.Marshal(files)
+	files := make([]string, 0, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			name += "/"
+		}
+		files = append(files, name)
+	}
+
+	b, err := json.Marshal(files)
 	if err != nil {
 		return "", err
 	}
-
-	return string(result), nil
+	return string(b), nil
 }
