@@ -1,11 +1,10 @@
 package tools_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"encoding/json"
 
 	"github.com/petasbytes/go-agent/tools"
 )
