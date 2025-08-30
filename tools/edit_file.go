@@ -1,3 +1,6 @@
+// Portions adapted from “How to Build an Agent” by Thorsten Ball (AmpCode) - https://ampcode.com/how-to-build-an-agent
+// Changes include: package modularisation, input descriptions, tool definition.
+
 package tools
 
 import (
@@ -9,9 +12,9 @@ import (
 )
 
 type EditFileInput struct {
-	Path   string `json:"path" jsonschema_description:"The path to the file"`
-	OldStr string `json:"old_str" jsonschema_description:"Text to search for - must match exactly and must only have one match exactly"`
-	NewStr string `json:"new_str" jsonschema_description:"Text to replace old_str with"`
+	Path   string `json:"path" jsonschema_description:"Target file path"`
+	OldStr string `json:"old_str" jsonschema_description:"Exact text to replace; must be present once when editing an existing file."`
+	NewStr string `json:"new_str" jsonschema_description:"New text to write or replace old_str with"`
 }
 
 var EditFileDefinition = ToolDefinition{
@@ -36,7 +39,7 @@ func EditFile(input json.RawMessage) (string, error) {
 	}
 
 	if editFileInput.Path == "" || editFileInput.OldStr == editFileInput.NewStr {
-		return "", fmt.Errorf("invalid input parameters")
+		return "", fmt.Errorf("invalid edit parameters")
 	}
 
 	content, err := os.ReadFile(editFileInput.Path)
