@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -24,8 +25,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load prior conversation if exists
-	persistPath := "conversation.json"
+	// Load prior conversation if exists (persist under hidden state dir)
+	persistDir := ".agent"
+	if err := os.MkdirAll(persistDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to create state dir %s: %v\n", persistDir, err)
+	}
+	persistPath := filepath.Join(persistDir, "conversation.json")
 	persisted, err := memory.LoadConversation(persistPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
