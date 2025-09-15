@@ -1,6 +1,7 @@
 .PHONY: run build run-bin test cover cover-html clean
 run:
-	go run ./cmd/agent
+	mkdir -p sandbox
+	cd sandbox && go run ../cmd/agent
 
 build:
 	go build -o bin/agent ./cmd/agent
