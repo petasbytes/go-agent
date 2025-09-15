@@ -39,6 +39,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 make run                               # or: go run ./cmd/agent
 ```
 
+By default, the Makefile runs the agent from a dedicated `./sandbox` directory (via a subshell `cd`). This keeps file operations contained during development.
+
+Note (development): The agent stores conversation state under `.agent/` in the current working directory (e.g., `sandbox/.agent/`). This directory is gitignored and can be safely deleted to reset state.
+
 ### Build:
 
 ```bash
