@@ -63,6 +63,10 @@ func InitSandboxRoot(readRoot, writeRoot string) (absRead string, absWrite strin
 // inside the sandbox. It rejects absolute inputs, parent traversal, and symlink
 // escapes, and denies reads under .git/ and .agent/. On violation, returns a ToolError.
 func ValidateRelPath(absRoot, relPath string) (string, error) {
+	// Normalise root to avoid /var vs /private/var mismatches on macOS
+	if r, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = r
+	}
 	// Reject absolute inputs early
 	if filepath.IsAbs(relPath) {
 		return "", ToolError{Code: "ERR_PATH_OUTSIDE_SANDBOX", Message: "absolute paths are not allowed"}
@@ -103,6 +107,65 @@ func ValidateRelPath(absRoot, relPath string) (string, error) {
 	relClean := filepath.ToSlash(rel)
 	if relClean == ".git" || strings.HasPrefix(relClean, ".git/") || relClean == ".agent" || strings.HasPrefix(relClean, ".agent/") {
 		return "", ToolError{Code: "ERR_DENIED_READ", Message: "reads under .git/ or .agent/ are not allowed"}
+	}
+
+	return candidate, nil
+}
+
+// ValidateWritePath resolves relPath against absWriteRoot and returns an absolute
+// path within the sandbox for writes. It rejects absolute inputs, parent traversal,
+// and symlink escapes, and enforces the write denylist; on violation, it returns a ToolError.
+func ValidateWritePath(absWriteRoot, relPath string) (string, error) {
+	// Normalise root to avoid /var vs /private/var mismatches on macOS
+	if r, err := filepath.EvalSymlinks(absWriteRoot); err == nil {
+		absWriteRoot = r
+	}
+	// Reject absolute inputs early
+	if filepath.IsAbs(relPath) {
+		return "", ToolError{Code: "ERR_PATH_OUTSIDE_SANDBOX", Message: "absolute paths are not allowed"}
+	}
+
+	// Clean and normalise the provided relative path
+	cleaned := filepath.Clean(relPath)
+	if cleaned == "" || cleaned == "." {
+		// For writes, empty/"." is not a meaningful file target; keep scope minimal
+		return "", ToolError{Code: "ERR_DENIED_WRITE", Message: "empty or current directory path not allowed for writes"}
+	}
+
+	// Join to make a candidate under the write root
+	candidate := filepath.Join(absWriteRoot, cleaned)
+
+	// Best-effort symlink resolution; if leaf doesn't exist, resolve deepest existing parent before boundary checks.
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+		candidate = resolved
+	} else {
+		parent := filepath.Dir(candidate)
+		if resolvedParent, err2 := filepath.EvalSymlinks(parent); err2 == nil {
+			candidate = filepath.Join(resolvedParent, filepath.Base(candidate))
+		}
+	}
+
+	// Boundary check using filepath.Rel (robust against partial prefix matches)
+	rel, err := filepath.Rel(absWriteRoot, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", ToolError{Code: "ERR_PATH_OUTSIDE_SANDBOX", Message: "requested path resolves outside the sandbox root"}
+	}
+
+	// Write denylist checks on the relative path form
+	relSlash := filepath.ToSlash(rel)
+	base := filepath.Base(rel)
+
+	// Directory-prefix blocks: .git/ and .agent/
+	if relSlash == ".git" || strings.HasPrefix(relSlash, ".git/") {
+		return "", ToolError{Code: "ERR_DENIED_WRITE", Message: "writes under .git/ are not allowed"}
+	}
+	if relSlash == ".agent" || strings.HasPrefix(relSlash, ".agent/") {
+		return "", ToolError{Code: "ERR_DENIED_WRITE", Message: "writes under .agent/ are not allowed"}
+	}
+
+	// Basename blocks at any depth
+	if base == "go.mod" || base == "go.sum" {
+		return "", ToolError{Code: "ERR_DENIED_WRITE", Message: "writes to go.mod or go.sum are not allowed"}
 	}
 
 	return candidate, nil
