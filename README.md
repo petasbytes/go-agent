@@ -12,9 +12,9 @@ A lean, extensible, language‑model–backed Go agent that can call simple tool
 
 ### Tools
 
-- `list_files`: Lists files in current directory (non-recursive)
-- `read_file`: Reads a specified text file
-- `edit_file`: Edits file content, or creates new file if it doesn't exist; no sandboxing yet (see Safety)
+- `list_files`: Lists files in current directory (non-recursive); enforced by path validation and read denylist
+- `read_file`: Reads a specified text file; enforced by path validation and read denylist
+- `edit_file`: Creates or edits a file within the sandbox; enforced by path validation and write policy
 
 ## Quick start
 
@@ -43,6 +43,14 @@ By default, the Makefile runs the agent from a dedicated `./sandbox` directory (
 
 Note (development): The agent stores conversation state under `.agent/` in the current working directory (e.g., `sandbox/.agent/`). This directory is gitignored and can be safely deleted to reset state.
 
+Optional: override sandbox roots (only if you aren't using the Makefile or want a different directory; by default the current working directory is used, and `make run` runs inside `./sandbox`):
+
+```bash
+export AGT_READ_ROOT="./my-workdir"
+export AGT_WRITE_ROOT="./my-workdir"
+make run
+```
+
 ### Build:
 
 ```bash
@@ -54,7 +62,7 @@ make build                             # or: go build -o bin/agent ./cmd/agent
 ```bash
 make test                              # or: go test ./... -count=1
 ```
-*(current testing scope: tools, registry, memory)*
+*(current testing scope: memory, registry, safety, tools)*
 
 ### Coverage:
 
@@ -63,53 +71,43 @@ make cover                             # or: go test ./... -count=1 -cover | tai
 make cover-html                        # HTML report for local viewing
 ```
 
-### Usage example
+### Using the agent
 
-#### List files:
+The CLI starts an interactive session. Type natural language instructions; the agent may call file tools under the hood.
+
+Example:
+
 ```
-You: hi there, please list all files in the current directory, thanks mate
-Claude: I'll list all the files in the current directory for you.
-Claude: Here are all the files and directories in the current directory:
+You: list the files in the current directory
 
-- .envrc
-- .git/ (directory)
-- .gitignore
-- LICENSE
-- Makefile
-- cmd/ (directory)
+Claude: Here are all the files and directories in the current directory:
+- cmd/
 - go.mod
 - go.sum
-- internal/ (directory)
-- memory/ (directory)
-- nothingtoseehere.txt
-- tools/ (directory)
-- veryinterestingfile.txt
-- whatonearthisinthisfile.txt
+- internal/
+- memory/
+- tools/
+- README.md
+- mysteriousotherfile.txt
 
 Let me know if you need anything else!
 ```
 
-#### Create file:
 ```
-You: actually can you make a file called superimportantfile.txt?
+You: create a new file called superimportantfile.txt
+
 Claude: I'll create a new file called "superimportantfile.txt" for you.
-
-To create a new file, I'll use the edit_file function with an empty old_str (since the file doesn't exist yet) and provide the initial content for the file.
-Claude: I've successfully created the file "superimportantfile.txt" with the initial content "This is a new super important file."
-
-Is there anything specific you'd like to add to this file or any other changes you need?
+Claude: I've successfully created the file "superimportantfile.txt"
 ```
 
-#### Read file:
 ```
-You: okay thanks, now can you please read that same file?     
+You: please read the new file you just created
+
 Claude: I'll read the superimportantfile.txt file for you.
 Claude: Here's the content of superimportantfile.txt:
-
 "This is a new super important file."
-You: awesome, thanks mate
-Claude: You're welcome! Glad I could help with creating and reading the superimportantfile.txt file. If you need any other assistance with file operations or anything else, just let me know. Have a great day!
 ```
+
 ___
 
 ## Project layout
@@ -143,8 +141,25 @@ flowchart LR
 
 ## Safety
 
-- Warning: Currently the `edit_file` tool writes without sandboxing; run the agent in a disposable/sandbox directory.
-- Path safety and write policy to be added (see Scope & Roadmap).
+- File tools enforce sandboxed access via path validation and deny/policy rules.
+- Sandbox roots:
+  - `AGT_READ_ROOT` (default: current working directory)
+  - `AGT_WRITE_ROOT` (default: same as read root)
+- Path validation:
+  - Clean + join relative paths
+  - Symlink resolution (including deepest existing ancestor when the leaf doesn’t exist)
+  - Robust boundary check using `filepath.Rel`
+- Read denylist:
+  - Denies reads under `.git/` and `.agent/` with code `ERR_DENIED_READ`
+- Write policy:
+  - Denies writes under `.git/` and `.agent/`
+  - Denies `go.mod` and `go.sum` by filename at any depth
+  - Violations return machine‑readable `ToolError` JSON (e.g., `{ "code": "ERR_DENIED_WRITE", ... }`)
+- macOS note: paths under `/var/...` may resolve to `/private/var/...`; validators normalize roots to avoid false boundary failures.
+
+- Defaults:
+  - If `AGT_READ_ROOT`/`AGT_WRITE_ROOT` are unset, both default to the current working directory.
+  - `make run` executes inside `./sandbox` (via subshell `cd`), so the effective roots default to `./sandbox`.
 
 ## Troubleshooting
 
@@ -158,7 +173,6 @@ flowchart LR
 
 Planned:
 
-- Path safety and write policy (sandbox roots)
 - Pair-safe windowing and heuristic token counter
 - Near-budget token counting; optional retries/limits
 
