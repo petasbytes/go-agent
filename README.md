@@ -12,9 +12,9 @@ A lean, extensible, language‑model–backed Go agent that can call simple tool
 
 ### Tools
 
-- `list_files`: Lists files in current directory (non-recursive); enforced by path validation and read denylist
-- `read_file`: Reads a specified text file; enforced by path validation and read denylist
-- `edit_file`: Creates or edits a file within the sandbox; enforced by path validation and write policy
+- `list_files`: Optional relative directory path within the sandbox (defaults to current directory). Returns a JSON array of names; directories are suffixed with `/`. Enforced by path validation and read denylist.
+- `read_file`: Relative file path within the sandbox; directories and unsafe paths are rejected. Enforced by path validation and read denylist.
+- `edit_file`: Relative file path within the sandbox; enforced by path validation and write policy.
 
 ## Quick start
 
@@ -115,6 +115,8 @@ ___
 - `cmd/agent/` — CLI entrypoint and wiring
 - `internal/provider/` — Anthropic client wrapper and `DefaultModel`
 - `internal/runner/` — message send loop and tool dispatch
+- `internal/fsops/` — path validation + I/O helpers for read/list/write
+- `internal/safety/` — sandbox roots, validators, and `ToolError`
 - `tools/` — `ToolDefinition`, JSON‑schema helper, and file tools
 - `memory/` — JSON persistence for text‑only messages
 
@@ -127,10 +129,12 @@ flowchart LR
     CLI --> RUN[internal/runner.Runner]
     RUN --> PROV[internal/provider.AnthropicClient]
     RUN --> TOOLS[tools/* list, read, edit]
+    TOOLS --> FSOPS[internal/fsops]
+    FSOPS --> SAFETY[internal/safety]
     CLI --> MEM[memory/* text-only transcript]
   end
   PROV <--> API[Anthropic Messages API]
-  TOOLS --> FS[(Local file system)]
+  SAFETY --> FS[(Local file system)]
 ```
 
 ### Current design choices
@@ -161,6 +165,16 @@ flowchart LR
   - If `AGT_READ_ROOT`/`AGT_WRITE_ROOT` are unset, both default to the current working directory.
   - `make run` executes inside `./sandbox` (via subshell `cd`), so the effective roots default to `./sandbox`.
 
+  Internally, safety violations are represented as structured ToolError codes (see `internal/safety/paths.go`).
+
+## Environment variables
+
+- `ANTHROPIC_API_KEY` — required for API calls.
+- `AGT_READ_ROOT` — read sandbox root (default: current working directory).
+- `AGT_WRITE_ROOT` — write sandbox root (default: same as read root).
+
+Roots are resolved once on first use (via `internal/fsops` using `sync.Once`).
+
 ## Troubleshooting
 
 - 401/403 from API: Ensure `ANTHROPIC_API_KEY` is set and valid.
@@ -179,6 +193,7 @@ Planned:
 ## Other references:
 
 - Anthropic Messages: https://docs.anthropic.com/en/api/messages
+- Anthropic Go SDK: https://github.com/anthropics/anthropic-sdk-go
 - Tool use: https://docs.anthropic.com/en/docs/build-with-claude/tool-use
 
 ## License
@@ -188,4 +203,3 @@ See `LICENSE` in this repository.
 ## Acknowledgements
 
 - Inspired by “How to Build an Agent” (AmpCode): https://ampcode.com/how-to-build-an-agent
-- Portions of tools/edit_file.go were adapted from the article. Changes include package modularisation, input descriptions, tool definition and wiring.
