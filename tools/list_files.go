@@ -2,16 +2,17 @@ package tools
 
 import (
 	"encoding/json"
-	"os"
+
+	"github.com/petasbytes/go-agent/internal/fsops"
 )
 
 type ListFilesInput struct {
-	Path string `json:"path,omitempty" jsonschema_description:"Optional relative path to list files from. Defaults to current directory if not provided."`
+	Path string `json:"path,omitempty" jsonschema_description:"Optional relative path to list files from (defaults to current directory)."`
 }
 
 var ListFilesDefinition = ToolDefinition{
 	Name:        "list_files",
-	Description: "List names of files in a directory (non-recursive).",
+	Description: "List names of files in a directory within the workspace (non-recursive).",
 	InputSchema: ListFilesInputSchema,
 	Function:    ListFiles,
 }
@@ -23,29 +24,5 @@ func ListFiles(input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-
-	dir := "."
-	if in.Path != "" {
-		dir = in.Path
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-
-	files := make([]string, 0, len(entries))
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			name += "/"
-		}
-		files = append(files, name)
-	}
-
-	b, err := json.Marshal(files)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+	return fsops.ListFiles(in.Path)
 }
