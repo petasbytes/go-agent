@@ -43,7 +43,7 @@ func (h HeuristicCounter) CountGroup(g Group, all []anthropic.MessageParam) int 
 // Helpers
 
 func countBlock(blk anthropic.ContentBlockParamUnion) int {
-	// test block
+	// text block
 	if tb := blk.OfText; tb != nil {
 		return utf8.RuneCountInString(tb.Text) + blockOverhead
 	}
