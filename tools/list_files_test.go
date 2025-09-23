@@ -60,3 +60,61 @@ func TestListFiles_InvalidPath_Error(t *testing.T) {
 		t.Fatal("expected error for invalid path")
 	}
 }
+
+func TestListFiles_SortingAndPaging(t *testing.T) {
+	dir := filepath.Join(sharedDir, rel(t))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create shuffled names
+	names := []string{"c.txt", "a.txt", "b.txt", "z.txt", "m.txt"}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Page 1 size 2 => ["a.txt", "b.txt"]
+	in := tools.ListFilesInput{Path: rel(t), Page: 1, PageSize: 2}
+	raw, _ := json.Marshal(in)
+	out, err := tools.ListFilesDefinition.Function(raw)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var got1 []string
+	if err := json.Unmarshal([]byte(out), &got1); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	want1 := []string{"a.txt", "b.txt"}
+	if len(got1) != len(want1) || got1[0] != want1[0] || got1[1] != want1[1] {
+		t.Fatalf("got=%v want=%v", got1, want1)
+	}
+
+	// Page 3 size 2 => ["z.txt"] (since sorted: a,b,c,m,z, pages are [a,b], [c,m], [z])
+	in.Page = 3
+	raw, _ = json.Marshal(in)
+	out, err = tools.ListFilesDefinition.Function(raw)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var got3 []string
+	if err := json.Unmarshal([]byte(out), &got3); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	want3 := []string{"z.txt"}
+	if len(got3) != len(want3) || got3[0] != want3[0] {
+		t.Fatalf("got=%v want=%v", got3, want3)
+	}
+
+	// Out-of-range page => []
+	in.Page = 4
+	raw, _ = json.Marshal(in)
+	out, err = tools.ListFilesDefinition.Function(raw)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out != "[]" {
+		t.Fatalf("want empty page: %q", out)
+	}
+}
