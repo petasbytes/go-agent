@@ -60,7 +60,7 @@ func ListFiles(input json.RawMessage) (string, error) {
 	sort.Strings(names)
 
 	start := (page - 1) * pageSize
-	// Out-of-range page returns an empty JSON array; keep the output contrac.
+	// Out-of-range page returns an empty JSON array; keep the output contract.
 	if start >= len(names) {
 		return "[]", nil
 	}

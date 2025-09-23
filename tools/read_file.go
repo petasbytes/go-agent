@@ -34,7 +34,7 @@ var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
 //   - limit: number of lines to return (<= defaults to 200)
 //
 // If not all lines are returned, it appends a trailing sentinel to signal pagination.
-// Rational: keep tool results predictably small for windowing/token heuristics.
+// Rationale: keep tool results predictably small for windowing/token heuristics.
 func ReadFile(input json.RawMessage) (string, error) {
 	var in ReadFileInput
 	if err := json.Unmarshal(input, &in); err != nil {
