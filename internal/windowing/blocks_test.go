@@ -4,52 +4,8 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/petasbytes/go-agent/internal/windowing"
 )
-
-func TU(id string) anthropic.ContentBlockParamUnion {
-	return anthropic.ContentBlockParamUnion{OfToolUse: &anthropic.ToolUseBlockParam{ID: id}}
-}
-
-func TR(id string, isErr bool) anthropic.ContentBlockParamUnion {
-	// SDK models IsError as param.Opt[bool]. Grouping ignores this flag, but we set it for the error case.
-	tr := anthropic.ToolResultBlockParam{ToolUseID: id}
-	if isErr {
-		tr.IsError = param.NewOpt(true)
-	}
-	return anthropic.ContentBlockParamUnion{OfToolResult: &tr}
-}
-
-func T(text string) anthropic.ContentBlockParamUnion {
-	return anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: text}}
-}
-
-func Asst(blocks ...anthropic.ContentBlockParamUnion) anthropic.MessageParam {
-	return anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: blocks}
-}
-
-func User(blocks ...anthropic.ContentBlockParamUnion) anthropic.MessageParam {
-	return anthropic.MessageParam{Role: anthropic.MessageParamRoleUser, Content: blocks}
-}
-
-// Intervening returns a message that simply breaks adjacency between
-// assistant(tool_use) and the expected next user(tool_result).
-func Intervening(text string) anthropic.MessageParam {
-	return anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: []anthropic.ContentBlockParamUnion{T(text)}}
-}
-
-func groupsEqual(got, want []windowing.Group) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i].Kind != want[i].Kind || got[i].Start != want[i].Start || got[i].End != want[i].End {
-			return false
-		}
-	}
-	return true
-}
 
 func TestGroupBlocks_Invariants(t *testing.T) {
 	tests := []struct {

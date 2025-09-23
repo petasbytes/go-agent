@@ -10,30 +10,6 @@ import (
 	"github.com/petasbytes/go-agent/internal/windowing"
 )
 
-func TRString(id, s string) anthropic.ContentBlockParamUnion {
-	return anthropic.NewToolResultBlock(id, s, false)
-}
-
-func TRNested(id string, nested []anthropic.ContentBlockParamUnion) anthropic.ContentBlockParamUnion {
-	// Convert ContentBlockParamUnion to ToolResultBlockParamContentUnion
-	content := make([]anthropic.ToolResultBlockParamContentUnion, len(nested))
-	for i, block := range nested {
-		if textBlock := block.OfText; textBlock != nil {
-			content[i] = anthropic.ToolResultBlockParamContentUnion{
-				OfText: textBlock,
-			}
-		}
-		// Add other block types as needed
-	}
-
-	return anthropic.ContentBlockParamUnion{
-		OfToolResult: &anthropic.ToolResultBlockParam{
-			ToolUseID: id,
-			Content:   content,
-		},
-	}
-}
-
 func TestHeuristicCounter_TextBlocks_CountsRunes(t *testing.T) {
 	h := windowing.HeuristicCounter{}
 	// ASCII + multibyte (emoji)
