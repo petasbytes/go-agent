@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/petasbytes/go-agent/internal/windowing"
 	"github.com/petasbytes/go-agent/tools"
 )
 
@@ -32,10 +35,31 @@ func (r *Runner) anthropicTools() []anthropic.ToolUnionParam {
 
 // RunOneStep sends the conversation and either prints text or returns tool results to be appended.
 func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []anthropic.MessageParam) (*anthropic.Message, []anthropic.ContentBlockParamUnion, error) {
+	v := os.Getenv("AGT_TOKEN_BUDGET")
+	if v == "" {
+		return nil, nil, fmt.Errorf("AGT_TOKEN_BUDGET not set; export it then try again")
+	}
+	budget, err := strconv.Atoi(v)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid AGT_TOKEN_BUDGET %q: %w", v, err)
+	}
+
+	// Prepare pair-safe, budgeted window
+	counter := windowing.HeuristicCounter{}
+	window, stats := windowing.PrepareSendWindow(conv, budget, counter)
+
+	// With tool caps the newest group should always fit within AGT_TOKEN_BUDGET.
+	// If not, treat it as a misconfiguration (e.g. too-low budget or caps not applied) and
+	// fail fast with error.
+	if stats.OverBudgetNewest {
+		return nil, nil, fmt.Errorf("windowing: newest group exceeds AGT_TOKEN_BUDGET; increase budget with headroom or tighten tool caps")
+	}
+
+	// Use prepared window instead of full conv
 	msg, err := r.Client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     model,
 		MaxTokens: int64(1024),
-		Messages:  conv,
+		Messages:  window,
 		Tools:     r.anthropicTools(),
 	})
 	if err != nil {
