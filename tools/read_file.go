@@ -13,11 +13,10 @@ type ReadFileInput struct {
 	Limit  int    `json:"limit,omitempty" jsonschema_description:"Maximum lines to return from offset (default 200)."`
 }
 
-// defaultReadFileLimit is the fallback page size when limit <= 0.
-const defaultReadFileLimit = 200
-
-// truncationSentinel marks that more content is available via offset/limit.
+const defaultReadFileLimit = 200 // fallback page size when limit <= 0
 const truncationSentinel = "-- truncated; use offset/limit to fetch more --\n"
+const maxLineRunes = 2000     // per-line clamp
+const overallRuneCap = 12_000 // overall cap after join
 
 var ReadFileDefinition = ToolDefinition{
 	Name:        "read_file",
@@ -27,6 +26,18 @@ var ReadFileDefinition = ToolDefinition{
 }
 
 var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
+
+// Helper: clamp a string to at most n runes
+func clampRunes(s string, n int) (string, bool) {
+	if n <= 0 {
+		return "", len([]rune(s)) > 0
+	}
+	r := []rune(s)
+	if len(r) < n {
+		return s, false
+	}
+	return string(r[:n]), true
+}
 
 // ReadFile reads a file via fsops (sandbox/policy) and applies small, deterministic
 // caps for LLM-facing pagination:
@@ -47,16 +58,15 @@ func ReadFile(input json.RawMessage) (string, error) {
 	}
 
 	limit := in.Limit
-	// Be forgiving for LLM callers: clamp negatives/defaults instead of failing.
-	// Safety/policy violations still surface via fsops/safety as ToolError.
 	if limit <= 0 {
-		limit = defaultReadFileLimit
+		limit = defaultReadFileLimit // 200
 	}
 	offset := in.Offset
 	if offset < 0 {
 		offset = 0
 	}
 
+	// Split and select window
 	lines := strings.Split(content, "\n")
 	if offset > len(lines) {
 		offset = len(lines)
@@ -66,15 +76,32 @@ func ReadFile(input json.RawMessage) (string, error) {
 		end = len(lines)
 	}
 
-	// If we didn't include all lines, mark truncation with a sentinel.
-	// Ensure the chunk ends with a newline so the sentinel is on its own line.
+	// Clamp each line to maxLineRunes, tracking if any truncation occurred
 	truncated := end < len(lines)
+	for i := offset; i < end; i++ {
+		if clamped, did := clampRunes(lines[i], maxLineRunes); did {
+			lines[i] = clamped
+			truncated = true
+		}
+	}
+
 	out := strings.Join(lines[offset:end], "\n")
+
+	// Apply overall cap after join
+	if _, did := clampRunes(out, overallRuneCap); did {
+		r := []rune(out)
+		out = string(r[:overallRuneCap])
+		truncated = true
+	}
+
+	// Ensure final newline and sentinel if any truncation took place
 	if truncated {
 		if !strings.HasSuffix(out, "\n") {
 			out += "\n"
 		}
-		out += truncationSentinel
+		if !strings.HasSuffix(out, truncationSentinel) {
+			out += truncationSentinel
+		}
 	}
 	return out, nil
 }
