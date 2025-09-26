@@ -158,11 +158,11 @@ flowchart LR
 
 - Windowing currently uses a (very approximate) Go rune-based heuristic. A [rune](https://go.dev/ref/spec#Rune_literals) is a Unicode code point (not always a user‑perceived character).
 - For English text, a practical rule of thumb is: `tokens ≈ runes / 3.5–4.0`. Use the upper end (4.0) when sizing budgets to be safe.
-- Examples (approximate):
-  - `AGT_TOKEN_BUDGET=8,000` runes → ~2,000–2,300 tokens (÷4.0) or ~2,000–2,700 (÷3.5)
-  - `AGT_TOKEN_BUDGET=12,000` runes → ~3,000–3,400 (÷4.0) or ~3,000–4,000 (÷3.5)
-  - `AGT_TOKEN_BUDGET=16,000` runes → ~4,000–4,600 (÷4.0) or ~4,000–5,300 (÷3.5)
-  - `AGT_TOKEN_BUDGET=20,000` runes → ~5,000–5,700 (÷4.0) or ~5,000–6,700 (÷3.5)
+- Examples (approximate, ÷4.0):
+  - `AGT_TOKEN_BUDGET=8,000` runes → ~2,000 tokens
+  - `AGT_TOKEN_BUDGET=12,000` runes → ~3,000 tokens
+  - `AGT_TOKEN_BUDGET=16,000` runes → ~4,000 tokens
+  - `AGT_TOKEN_BUDGET=20,000` runes → ~5,000 tokens
 - Caveats: actual token counts vary by model/tokenizer, language/script (e.g., CJK), and content (code, JSON tool results, etc). Near budget or for billing/limits, prefer exact counts via Anthropic’s CountTokens (see "Roadmap").
 
 ## Safety
