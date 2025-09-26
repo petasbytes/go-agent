@@ -33,7 +33,7 @@ func clampRunes(s string, n int) (string, bool) {
 		return "", len([]rune(s)) > 0
 	}
 	r := []rune(s)
-	if len(r) < n {
+	if len(r) <= n {
 		return s, false
 	}
 	return string(r[:n]), true
