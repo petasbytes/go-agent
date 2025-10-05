@@ -1,3 +1,5 @@
+// Package telemetry provides helpers for attaching and retrieving telemetry
+// metadata from context.
 package telemetry
 
 import (
