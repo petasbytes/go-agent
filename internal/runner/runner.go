@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/petasbytes/go-agent/internal/telemetry"
 	"github.com/petasbytes/go-agent/internal/windowing"
 	"github.com/petasbytes/go-agent/tools"
 )
@@ -47,6 +49,29 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 	// Prepare pair-safe, budgeted window
 	counter := windowing.HeuristicCounter{}
 	window, stats := windowing.PrepareSendWindow(conv, budget, counter)
+
+	// Get turnID from contezt if present, else generate once for this call.
+	turnID, ok := telemetry.TurnIDFromContext(ctx)
+	if !ok {
+		turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
+	}
+
+	telemetry.Emit("window_prepared", map[string]any{
+		"turn_id":            turnID,
+		"model":              string(model),
+		"budget":             stats.Budget,
+		"total_estimated":    stats.Total,
+		"included_groups":    stats.IncludedGroups,
+		"skipped_groups":     stats.SkippedGroups,
+		"over_budget_newest": stats.OverBudgetNewest,
+	})
+
+	if os.Getenv("AGT_VERBOSE_WINDOW_LOGS") == "1" {
+		fmt.Printf(
+			"window: model=%s budget=%d est_total=%d groups_in=%d groups_skip=%d newest_over=%t\n",
+			string(model), stats.Budget, stats.Total, stats.IncludedGroups, stats.SkippedGroups, stats.OverBudgetNewest,
+		)
+	}
 
 	// With tool caps the newest group should always fit within AGT_TOKEN_BUDGET.
 	// If not, treat it as a misconfiguration (e.g. too-low budget or caps not applied) and
