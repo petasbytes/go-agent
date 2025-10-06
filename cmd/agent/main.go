@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/petasbytes/go-agent/internal/provider"
 	"github.com/petasbytes/go-agent/internal/runner"
+	"github.com/petasbytes/go-agent/internal/telemetry"
 	"github.com/petasbytes/go-agent/memory"
 	"github.com/petasbytes/go-agent/tools"
 )
@@ -93,11 +95,16 @@ outer:
 		}
 		conv = append(conv, anthropic.NewUserMessage(anthropic.NewTextBlock(user)))
 
+		// Per-turn context: derive from base ctx so Ctrl-C cancels; add a timeout and turn ID
+		turnID := fmt.Sprintf("turn-%d", time.Now().UnixNano())
+		ctxTurn, cancelTurn := context.WithTimeout(ctx, 60*time.Second)
+		ctxTurn = telemetry.WithTurnID(ctxTurn, turnID)
+
 		// Track assistant visible text to persist after the turn
 		var lastAssistantText string
 		for {
 			// No windowing for now; send full conversation buffer
-			msg, toolResults, err := r.RunOneStep(ctx, model, conv)
+			msg, toolResults, err := r.RunOneStep(ctxTurn, model, conv)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				break
@@ -121,6 +128,9 @@ outer:
 			// Provide tool results as a user message back to the model
 			conv = append(conv, anthropic.NewUserMessage(toolResults...))
 		}
+
+		// Release resources/timers based on per-turn context.
+		cancelTurn()
 
 		// Persist minimal text-only transcript (user + assistant)
 		persisted = append(persisted, memory.Message{Role: "user", Text: user})
