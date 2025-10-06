@@ -56,6 +56,8 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
 	}
 
+	ctx = telemetry.WithTurnID(ctx, turnID)
+
 	telemetry.Emit("window_prepared", map[string]any{
 		"turn_id":            turnID,
 		"model":              string(model),
@@ -98,14 +100,14 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		case anthropic.ToolUseBlock:
 			// Pass raw JSON input through to the tool implementation
 			input := json.RawMessage(v.JSON.Input.Raw())
-			res := r.execTool(v.ID, v.Name, input)
+			res := r.execTool(ctx, v.ID, v.Name, input)
 			toolResults = append(toolResults, res)
 		}
 	}
 	return msg, toolResults, nil
 }
 
-func (r *Runner) execTool(id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
+func (r *Runner) execTool(ctx context.Context, id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
 	var def *tools.ToolDefinition
 	for i := range r.Tools {
 		if r.Tools[i].Name == name {
@@ -113,12 +115,44 @@ func (r *Runner) execTool(id, name string, input json.RawMessage) anthropic.Cont
 			break
 		}
 	}
+
+	turnID, _ := telemetry.TurnIDFromContext(ctx)
+
+	// Helper to emit a tool_exec event
+	emit := func(durationMs int64, inputSize int, outputSize int, errStr string) {
+		fields := map[string]any{
+			"tool_name":   name,
+			"duration_ms": durationMs,
+			"input_size":  inputSize,
+			"output_size": outputSize,
+			"turn_id":     turnID,
+		}
+		if errStr != "" {
+			fields["error"] = errStr
+		} else {
+			fields["error"] = nil
+		}
+		telemetry.Emit("tool_exec", fields)
+	}
+
+	start := time.Now()
+	inSize := len(input)
+
+	// Handle "tool not found" as an error result and emit telemetry
 	if def == nil {
+		emit(time.Since(start).Milliseconds(), inSize, 0, "tool not found")
 		return anthropic.NewToolResultBlock(id, "tool not found", true)
 	}
+
+	// Execute the tool
 	resp, err := def.Function(input)
 	if err != nil {
+		// Emit a generic error string to avoid leaking raw payloads in telemetry
+		emit(time.Since(start).Milliseconds(), inSize, 0, "tool error")
+		// Preserve detailed error message in the tool result content returned to the model
 		return anthropic.NewToolResultBlock(id, err.Error(), true)
 	}
+	outSize := len(resp)
+	emit(time.Since(start).Milliseconds(), inSize, outSize, "")
 	return anthropic.NewToolResultBlock(id, resp, false)
 }
