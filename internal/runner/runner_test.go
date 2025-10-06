@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/petasbytes/go-agent/internal/provider"
 	"github.com/petasbytes/go-agent/internal/runner"
+	"github.com/petasbytes/go-agent/internal/telemetry"
 	"github.com/petasbytes/go-agent/tools"
 )
 
@@ -20,6 +22,64 @@ type capture struct {
 	method string
 	url    string
 	body   []byte
+}
+
+// Helper: change to temp dir for duration of test and restore after.
+func chdirTemp(t *testing.T) string {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	return tmp
+}
+
+// Helper: capture stdout for duration of function f.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+
+	f()
+	_ = w.Close()
+	out := <-done
+	return out
+}
+
+// Helper: read .agent/events/jsonl lines; returns slice of non-empty lines (or empty if file missing)
+func readEventLines(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(".agent/events.jsonl")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read events.jsonl: %v", err)
+	}
+	var out []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		if s := strings.TrimSpace(ln); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func TestRunner_IncludesNewestToolPairOnly_WhenBudgetFitsPair(t *testing.T) {
@@ -228,5 +288,205 @@ func TestRunner_ToolUse_ExecutesToolAndReturnsResults(t *testing.T) {
 	}
 	if len(toolResults) == 0 {
 		t.Fatal("expected at least one tool_result from execTool")
+	}
+}
+
+func TestRunner_WindowPrepared_JSONL_HappyPath_SingleEmission(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	capReq := &capture{}
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: capReq}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+
+	// Two short user messages; newest should fit within budget.
+	conv := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("hi")),
+		anthropic.NewUserMessage(anthropic.NewTextBlock("there")),
+	}
+
+	before := len(readEventLines(t))
+	_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	lines := readEventLines(t)
+	if got := len(lines) - before; got != 1 {
+		t.Fatalf("expected exactly one new event line, got %d (before=%d after=%d)", got, before, len(lines))
+	}
+
+	// Validate last event fields
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["event"] != "window_prepared" {
+		t.Errorf("want event=window_prepared, got %v", m["event"])
+	}
+	if m["model"] != string(provider.DefaultModel) {
+		t.Errorf("unexpected model: %v", m["model"])
+	}
+	if _, ok := m["turn_id"].(string); !ok || m["turn_id"].(string) == "" {
+		t.Errorf("turn_id missing or empty")
+	}
+	if v, ok := m["over_budget_newest"].(bool); !ok || v {
+		t.Errorf("expected over_budget_newest=false, got %v", m["over_budget_newest"])
+	}
+}
+
+func TestRunner_VerboseSummary_OnOff(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	_ = chdirTemp(t)
+
+	capReq := &capture{}
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: capReq}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hello"))}
+
+	// On
+	t.Setenv("AGT_VERBOSE_WINDOW_LOGS", "1")
+	out := captureStdout(t, func() {
+		_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 verbose line, got %d: %q", len(lines), out)
+	}
+	if !strings.Contains(lines[0], "window: model=") {
+		t.Errorf("missing window summary prefix: %q", lines[0])
+	}
+
+	// Off
+	t.Setenv("AGT_VERBOSE_WINDOW_LOGS", "0")
+	out2 := captureStdout(t, func() {
+		_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+	if strings.TrimSpace(out2) != "" {
+		t.Fatalf("expected no verbose output, got %q", out2)
+	}
+}
+
+func TestRunner_EmissionBeforeFastFail_And_VerboseLine(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	capReq := &capture{}
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: capReq}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hello"))}
+
+	// Without verbose: must emit event and make no HTTP call
+	before := len(readEventLines(t))
+	_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+	if err == nil || !strings.Contains(err.Error(), "newest group exceeds AGT_TOKEN_BUDGET") {
+		t.Fatalf("expected over-budget newest error, got %v", err)
+	}
+	if capReq.body != nil {
+		t.Fatalf("expected no HTTP call on fast-fail; got body len=%d", len(capReq.body))
+	}
+
+	lines := readEventLines(t)
+	if len(lines) == before {
+		t.Fatalf("expected an emitted event line before error; none found")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if v, ok := m["over_budget_newest"].(bool); !ok || !v {
+		t.Errorf("expected over_budget_newest=true, got %v", m["over_budget_newest"])
+	}
+
+	// Variant: verbose-on-fast-fail prints exactly one line
+	t.Setenv("AGT_VERBOSE_WINDOW_LOGS", "1")
+	out := captureStdout(t, func() {
+		_, _, _ = r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+	})
+	vlines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(vlines) != 1 {
+		t.Fatalf("expected 1 verbose line on fast-fail, got %d: %q", len(vlines), out)
+	}
+}
+
+func TestRunner_TurnID_Propagation(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("ping"))}
+
+	// Case 1: explicit turn ID
+	ctx := telemetry.WithTurnID(context.Background(), "turn-abc")
+	_, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	lines := readEventLines(t)
+	if len(lines) == 0 {
+		t.Fatal("no events written")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["turn_id"] != "turn-abc" {
+		t.Errorf("expected turn_id=turn-abc, got %v", m["turn_id"])
+	}
+
+	// Case 2: generated turn ID (non-empty)
+	before := len(lines)
+	_, _, err = r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	lines2 := readEventLines(t)
+	if len(lines2) <= before {
+		t.Fatal("expected another event line")
+	}
+	var m2 map[string]any
+	if err := json.Unmarshal([]byte(lines2[len(lines2)-1]), &m2); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if s, ok := m2["turn_id"].(string); !ok || strings.TrimSpace(s) == "" {
+		t.Errorf("expected non-empty generated turn_id, got %v", m2["turn_id"])
+	}
+}
+
+func TestRunner_NoEmit_NoVerbose_WhenFlagsOff(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	_ = chdirTemp(t)
+
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("ok"))}
+
+	out := captureStdout(t, func() {
+		_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("expected no verbose output, got %q", out)
+	}
+
+	if _, err := os.Stat(".agent"); !os.IsNotExist(err) {
+		t.Fatalf("expected no .agent directory when AGT_OBSERVE_JSON is off")
 	}
 }
