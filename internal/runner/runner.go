@@ -50,7 +50,7 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 	counter := windowing.HeuristicCounter{}
 	window, stats := windowing.PrepareSendWindow(conv, budget, counter)
 
-	// Get turnID from contezt if present, else generate once for this call.
+	// Get turnID from context if present, else generate once for this call.
 	turnID, ok := telemetry.TurnIDFromContext(ctx)
 	if !ok {
 		turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
