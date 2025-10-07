@@ -27,7 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load prior conversation if exists (persist under hidden state dir)
+	// Load prior conversation if exists
 	persistDir := ".agent"
 	if err := os.MkdirAll(persistDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to create state dir %s: %v\n", persistDir, err)
@@ -103,7 +103,7 @@ outer:
 		// Track assistant visible text to persist after the turn
 		var lastAssistantText string
 		for {
-			// No windowing for now; send full conversation buffer
+			// Prepare a pair-safe, budgeted input window before sending (handled in runner)
 			msg, toolResults, err := r.RunOneStep(ctxTurn, model, conv)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
