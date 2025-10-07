@@ -16,6 +16,18 @@ A lean, extensible, language‑model–backed Go agent that can call simple tool
 - `read_file`: Relative file path within the sandbox; supports `offset` (0-based line) and `limit` (default 200 lines). Applies a per-line clamp and an overall rune cap; when paginated or truncated, appends a trailing sentinel `-- truncated; use offset/limit to fetch more --\n`. Enforced by path validation and read denylist.
 - `edit_file`: Relative file path within the sandbox; enforced by path validation and write policy. Returns `OK` on successful edit; creating a new file returns a descriptive non-empty confirmation.
 
+#### Tool caps and limits (for predictable windows)
+
+- `read_file` caps:
+  - Per-line clamp: 2000 runes
+  - Overall cap: 12,000 runes after join
+  - Pagination defaults: `offset` clamped to ≥0, `limit` defaults to 200
+  - Truncation sentinel appended when not all content is returned
+- `list_files` paging:
+  - Deterministic sort, `page` default 1, `page_size` default 200
+- Large files:
+  - Reads > 20MB are rejected with `ERR_FILE_TOO_LARGE`
+
 ## Quick start
 
 ### Setup:
@@ -118,6 +130,7 @@ ___
 - `internal/windowing/` — grouping, heuristic token counter, budgeted window preparation
 - `internal/fsops/` — path validation + I/O helpers for read/list/write
 - `internal/safety/` — sandbox roots, validators, and `ToolError`
+- `internal/telemetry/` — JSONL emitter and turn-id context helpers
 - `tools/` — `ToolDefinition`, JSON‑schema helper, and file tools
 - `memory/` — JSON persistence for text‑only messages
 
@@ -130,6 +143,7 @@ flowchart LR
     CLI --> RUN[internal/runner.Runner]
     RUN --> WIN[internal/windowing: group, count, prepare]
     RUN --> TOOLS[tools/*: list, read, edit]
+    RUN --> TEL[internal/telemetry]
     TOOLS --> FSOPS[internal/fsops]
     FSOPS --> SAFETY[internal/safety]
     CLI --> MEM[memory/*: text-only transcript]
@@ -137,6 +151,7 @@ flowchart LR
   WIN --> PROV[internal/provider.AnthropicClient]
   PROV <--> API[Anthropic Messages API]
   SAFETY --> FS[(Local file system)]
+  TEL --> EVE[(.agent/events.jsonl)]
 ```
 
 ### Current design choices
@@ -192,13 +207,54 @@ flowchart LR
 ## Environment variables
 
 - `ANTHROPIC_API_KEY` — required for API calls.
-- `AGT_TOKEN_BUDGET` — required input-window budget used by the runner (currently rune-based; example: `1000`).
-- `AGT_TOKEN_COUNTER` — token counter selection (default: `heuristic`; reserved for future configuration).
+- `AGT_TOKEN_BUDGET` — required input-window budget used by the runner (currently rune-based; example: `16000`).
+- `AGT_TOKEN_COUNTER` — token counter selection (default: `heuristic`; currently ignored; reserved for future configuration).
 - `AGT_VERBOSE_WINDOW_LOGS` — set to `1` to enable concise windowing debug logs (optional).
+- `AGT_OBSERVE_JSON` — set to `1` to emit JSONL events to `.agent/events.jsonl` (opt-in observability).
 - `AGT_READ_ROOT` — read sandbox root (default: current working directory).
 - `AGT_WRITE_ROOT` — write sandbox root (default: same as read root).
 
 Roots are resolved once on first use (via `internal/fsops` using `sync.Once`).
+
+## Observability (opt-in)
+
+- **Flags**:
+  - `AGT_OBSERVE_JSON=1` enables JSONL event emission to `.agent/events.jsonl`.
+  - `AGT_VERBOSE_WINDOW_LOGS=1` prints a single compact summary line of the prepared window.
+- **Events** (no raw payloads are logged):
+  - `window_prepared`: `budget`, `total_estimated`, `included_groups`, `skipped_groups`, `over_budget_newest`, `model`, `turn_id`.
+  - `tool_exec`: `tool_name`, `duration_ms`, `input_size`, `output_size`, `error`, `turn_id`.
+- **Turn correlation**: a `turn_id` is generated per `RunOneStep(...)` if absent and attached to all events for that turn.
+- **Privacy**: only sizes/counts/ids/booleans are recorded. The `.agent/` directory is gitignored.
+- **Troubleshooting**: if `.agent/` is not writable, a stderr warning is printed and that event write is skipped (no behavioral change). Deleting `.agent/events.jsonl` is safe.
+
+### Observability quick usage
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export AGT_TOKEN_BUDGET=16000
+export AGT_OBSERVE_JSON=1
+export AGT_VERBOSE_WINDOW_LOGS=1   # optional
+make run
+```
+
+Expected during a turn (stdout, when verbose window logs enabled), e.g.:
+
+```
+window: model=claude-3-7-sonnet-latest budget=16000 est_total=2773 groups_in=16 groups_skip=0 newest_over=false
+```
+
+Event records are appended to `.agent/events.jsonl` (one JSON object per line), e.g.:
+
+```jsonl
+{"budget":16000,"event":"window_prepared","included_groups":16,"model":"claude-3-7-sonnet-latest","over_budget_newest":false,"skipped_groups":0,"time":"2025-10-07T00:08:38.374023Z","total_estimated":2773,"turn_id":"turn-..."}
+{"duration_ms":0,"error":null,"event":"tool_exec","input_size":22,"output_size":317,"time":"2025-10-07T00:08:16.920809Z","tool_name":"read_file","turn_id":"turn-..."}
+```
+
+#### View recent events (pretty-printed, sorted keys):
+```bash
+tail -n 20 .agent/events.jsonl | jq -c -S .
+```
 
 ## Troubleshooting
 
