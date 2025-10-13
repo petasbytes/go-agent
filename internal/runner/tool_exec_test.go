@@ -211,7 +211,8 @@ func TestRunner_ToolExec_JSONL_ToolNotFound(t *testing.T) {
 
 func TestRunner_ToolExec_Gating_Off_NoWrites(t *testing.T) {
 	t.Setenv("AGT_TOKEN_BUDGET", "1000")
-	// Do NOT set AGT_OBSERVE_JSON, keep it off
+	// Explicitly disable telemetry in case it's enabled in the ambient environment
+	t.Setenv("AGT_OBSERVE_JSON", "0")
 	_ = chdirTemp(t)
 
 	resp := `{

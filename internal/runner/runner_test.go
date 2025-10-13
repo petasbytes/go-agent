@@ -469,6 +469,8 @@ func TestRunner_TurnID_Propagation(t *testing.T) {
 
 func TestRunner_NoEmit_NoVerbose_WhenFlagsOff(t *testing.T) {
 	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	// Explicitly disable telemetry in case it's enabled in the ambient environment
+	t.Setenv("AGT_OBSERVE_JSON", "0")
 	_ = chdirTemp(t)
 
 	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
