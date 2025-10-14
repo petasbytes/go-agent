@@ -3,6 +3,7 @@ package telemetry_test
 import (
 	"encoding/json"
 	"math"
+	"os/exec"
 	"os"
 	"strings"
 	"testing"
@@ -12,28 +13,40 @@ import (
 )
 
 func TestEmit_Gating(t *testing.T) {
-	// Setup: temp dir, env var unset
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(origDir)
+    // Run in a subprocess so startup-evaluated telemetry config sees AGT_OBSERVE_JSON=0.
+    tmpDir := t.TempDir()
+    cmd := exec.Command(os.Args[0], "-test.run=TestEmitGatingProbe")
+    cmd.Env = append(os.Environ(),
+        "GO_WANT_HELPER_PROCESS=1",
+        "AGT_OBSERVE_JSON=0",
+        // Ensure related flags are cleared so defaults don't flip it on
+        "AGT_CALIBRATION_MODE=",
+        "AGT_PERSIST_API_PAYLOADS=",
+        // Run in tmpDir so child writes here if it were to emit
+        "PWD="+tmpDir,
+    )
+    cmd.Dir = tmpDir
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        t.Fatalf("subprocess error: %v\n%s", err, string(out))
+    }
+    if !strings.Contains(string(out), "no_file=true") {
+        t.Fatalf("expected no_file=true, got output:\n%s", string(out))
+    }
+}
 
-	tmpDir := t.TempDir()
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatal(err)
-	}
-
-	// Ensure env is unset
-	t.Setenv("AGT_OBSERVE_JSON", "0")
-
-	// Emit should be no-op
-	telemetry.Emit("test_event", map[string]any{"foo": "bar"})
-
-	// Assert: no file created
-	if _, err := os.Stat(".agent/events.jsonl"); !os.IsNotExist(err) {
-		t.Fatal("expected no file when AGT_OBSERVE_JSON=0")
-	}
+func TestEmitGatingProbe(t *testing.T) {
+    if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+        return
+    }
+    // Child: attempt an emission with gating off
+    telemetry.Emit("test_event", map[string]any{"foo": "bar"})
+    if _, err := os.Stat(".agent/events.jsonl"); os.IsNotExist(err) {
+        // Print a sentinel for parent to assert
+        println("no_file=true")
+    } else {
+        println("no_file=false")
+    }
 }
 
 func TestEmit_HappyPath(t *testing.T) {
