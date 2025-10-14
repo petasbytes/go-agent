@@ -5,28 +5,22 @@ package telemetry
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-// isObserveEnabled checks if JSONL emission is enabled.
-func isObserveEnabled() bool {
-	return os.Getenv("AGT_OBSERVE_JSON") == "1"
-}
-
-// Emit writes a single JSON line to .agent/events.jsonl when AGT_OBSERVE_JSON=1.
+// Emit writes a single JSON line to .agent/events.jsonl when observation is enabled.
 // It augments fields with RFC3339Nano time and the event name.
 func Emit(name string, fields map[string]any) {
-	if !isObserveEnabled() {
+	if !ObserveEnabled() {
 		return
 	}
 
 	// Make a shallow copy so callers' maps aren't mutated.
 	m := make(map[string]any, len(fields)+2)
-	for k, v := range fields {
-		m[k] = v
-	}
+	maps.Copy(m, fields)
 	m["time"] = time.Now().UTC().Format(time.RFC3339Nano)
 	m["event"] = name
 
