@@ -82,13 +82,18 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		return nil, nil, fmt.Errorf("windowing: newest group exceeds AGT_TOKEN_BUDGET; increase budget with headroom or tighten tool caps")
 	}
 
-	// Use prepared window instead of full conv
-	msg, err := r.Client.Messages.New(ctx, anthropic.MessageNewParams{
+	// Build final request params from the prepared window; gate Tools on calibration mode
+	params := anthropic.MessageNewParams{
 		Model:     model,
 		MaxTokens: int64(1024),
 		Messages:  window,
-		Tools:     r.anthropicTools(),
-	})
+	}
+	// Only include tools when NOT in calibration mode
+	if !telemetry.CalibrationModeEnabled() {
+		params.Tools = r.anthropicTools()
+	}
+
+	msg, err := r.Client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, nil, err
 	}
