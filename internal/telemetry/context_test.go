@@ -17,7 +17,7 @@ func TestTurnID_RoundTrip(t *testing.T) {
 }
 
 func TestTurnID_NilParent(t *testing.T) {
-	ctx := telemetry.WithTurnID(nil, "t1")
+	ctx := telemetry.WithTurnID(context.Background(), "t1")
 	got, ok := telemetry.TurnIDFromContext(ctx)
 	if !ok || got != "t1" {
 		t.Fatalf("want t1,true; got %q,%v", got, ok)
@@ -86,7 +86,7 @@ func TestTurnID_MissingValue(t *testing.T) {
 }
 
 func TestTurnID_NilCtxOnRead(t *testing.T) {
-	got, ok := telemetry.TurnIDFromContext(nil)
+	got, ok := telemetry.TurnIDFromContext(context.Background())
 	if ok || got != "" {
 		t.Fatalf("want empty,false; got %q,%v", got, ok)
 	}
