@@ -210,10 +210,15 @@ func TestRunner_ToolExec_JSONL_ToolNotFound(t *testing.T) {
 }
 
 func TestRunner_ToolExec_Gating_Off_NoWrites(t *testing.T) {
-	t.Setenv("AGT_TOKEN_BUDGET", "1000")
-	// Explicitly disable telemetry in case it's enabled in the ambient environment
-	t.Setenv("AGT_OBSERVE_JSON", "0")
-	_ = chdirTemp(t)
+    t.Setenv("AGT_TOKEN_BUDGET", "1000")
+    // Startup-only config: if observation was enabled at process start, we cannot
+    // disable it mid-run. In that case skip this test.
+    if telemetry.ObserveEnabled() {
+        t.Skip("ObserveEnabled at startup; cannot disable mid-run in this process")
+    }
+    // Explicitly request off, though startup config already determined gating.
+    t.Setenv("AGT_OBSERVE_JSON", "0")
+    _ = chdirTemp(t)
 
 	resp := `{
 		"role": "assistant",
