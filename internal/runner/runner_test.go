@@ -468,9 +468,14 @@ func TestRunner_TurnID_Propagation(t *testing.T) {
 }
 
 func TestRunner_NoEmit_NoVerbose_WhenFlagsOff(t *testing.T) {
-	t.Setenv("AGT_TOKEN_BUDGET", "10")
-	// Explicitly disable telemetry in case it's enabled in the ambient environment
-	t.Setenv("AGT_OBSERVE_JSON", "0")
+    t.Setenv("AGT_TOKEN_BUDGET", "10")
+    // Startup-only config: if observation was enabled at process start, we cannot
+    // disable it mid-run. In that case skip this test.
+    if telemetry.ObserveEnabled() {
+        t.Skip("ObserveEnabled at startup; cannot disable mid-run in this process")
+    }
+    // Explicitly request off, though startup config already determined gating.
+    t.Setenv("AGT_OBSERVE_JSON", "0")
 	_ = chdirTemp(t)
 
 	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
