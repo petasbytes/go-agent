@@ -25,6 +25,13 @@ type capture struct {
 	body   []byte
 }
 
+// headerTransport returns a canned response with headers.
+type headerTransport struct {
+	status  int
+	body    []byte
+	headers map[string]string
+}
+
 // Helper: change to temp dir for duration of test and restore after.
 func chdirTemp(t *testing.T) string {
 	t.Helper()
@@ -78,6 +85,33 @@ func readEventLines(t *testing.T) []string {
 	for _, ln := range strings.Split(string(b), "\n") {
 		if s := strings.TrimSpace(ln); s != "" {
 			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp := &http.Response{
+		StatusCode: h.status,
+		Body:       io.NopCloser(bytes.NewReader(h.body)),
+		Header:     make(http.Header),
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	for k, v := range h.headers {
+		resp.Header.Set(k, v)
+	}
+	return resp, nil
+}
+
+// filterEventsByName returns JSONL lines whose event name matches.
+func filterEventsByName(lines []string, name string) [][]byte {
+	var out [][]byte
+	for _, ln := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(ln), &m); err == nil {
+			if ev, ok := m["event"].(string); ok && ev == name {
+				out = append(out, []byte(ln))
+			}
 		}
 	}
 	return out
@@ -642,5 +676,188 @@ func TestRunner_RequestPersists_OnAPIError_ResponseAbsent(t *testing.T) {
 	// response.json should be absent on error
 	if _, err := os.Stat(filepath.Join(base, "payloads", "turn-err", "response.json")); err == nil || !os.IsNotExist(err) {
 		t.Fatalf("expected no response.json on API error (err=%v)", err)
+	}
+}
+
+func TestRunner_ApiUsage_HappyPath_EventFields(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	// Response includes non-zero usage and Anthropic-Version header.
+	raw := []byte(`{
+		"id":"msg_abc",
+		"type":"message",
+		"role":"assistant",
+		"stop_reason":"end_turn",
+		"content":[],
+		"usage":{"input_tokens":5,"output_tokens":7}
+	}`)
+	cli := newClientWithTransport(&headerTransport{
+		status:  200,
+		body:    raw,
+		headers: map[string]string{"Anthropic-Version": "2023-06-01"},
+	})
+	r := runner.New(cli, tools.Registry())
+
+	turnID := "turn-test-usage"
+	ctx := telemetry.WithTurnID(context.Background(), turnID)
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hi"))}
+
+	before := readEventLines(t)
+	if _, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	after := readEventLines(t)
+
+	newApiUsage := filterEventsByName(after[len(before):], "api_usage")
+	if len(newApiUsage) != 1 {
+		t.Fatalf("want exactly 1 api_usage event, got %d", len(newApiUsage))
+	}
+	var m map[string]any
+	if err := json.Unmarshal(newApiUsage[0], &m); err != nil {
+		t.Fatalf("invalid api_usage json: %v", err)
+	}
+	if m["turn_id"] != turnID {
+		t.Errorf("turn_id mismatch: %v", m["turn_id"])
+	}
+	if m["model"] != string(provider.DefaultModel) {
+		t.Errorf("model mismatch: %v", m["model"])
+	}
+	if m["api_version"] != "2023-06-01" {
+		t.Errorf("api_version mismatch: %v", m["api_version"])
+	}
+	if m["message_id"] != "msg_abc" {
+		t.Errorf("message_id mismatch: %v", m["message_id"])
+	}
+	if m["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason mismatch: %v", m["stop_reason"])
+	}
+	// Numbers decode as float64 in map[string]any.
+	if v, ok := m["input_tokens"].(float64); !ok || v != 5 {
+		t.Errorf("input_tokens = %v", m["input_tokens"])
+	}
+	if v, ok := m["output_tokens"].(float64); !ok || v != 7 {
+		t.Errorf("output_tokens = %v", m["output_tokens"])
+	}
+	if _, ok := m["prepared_estimated_total"].(float64); !ok {
+		t.Errorf("prepared_estimated_total not present or not numeric: %v", m["prepared_estimated_total"])
+	}
+	if v, ok := m["max_tokens"].(float64); !ok || v != 1024 {
+		t.Errorf("max_tokens = %v", m["max_tokens"])
+	}
+}
+
+func TestRunner_ApiUsage_Skipped_WhenUsageAbsent(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	// Usage present but both zero -> skip emission.
+	raw := []byte(`{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":0,"output_tokens":0}}`)
+	cli := newClientWithTransport(&headerTransport{status: 200, body: raw})
+	r := runner.New(cli, tools.Registry())
+
+	before := readEventLines(t)
+	_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("x"))})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	after := readEventLines(t)
+	newApiUsage := filterEventsByName(after[len(before):], "api_usage")
+	if len(newApiUsage) != 0 {
+		t.Fatalf("expected 0 api_usage events, got %d", len(newApiUsage))
+	}
+}
+
+func TestRunner_ApiUsage_NotEmitted_OnHTTPError(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	_ = chdirTemp(t)
+
+	cli := newClientWithTransport(&headerTransport{status: 500, body: []byte(`{"error":"boom"}`)})
+	r := runner.New(cli, tools.Registry())
+
+	before := readEventLines(t)
+	_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("x"))})
+	if err == nil {
+		t.Fatalf("expected error from API 500, got nil")
+	}
+	after := readEventLines(t)
+	newApiUsage := filterEventsByName(after[len(before):], "api_usage")
+	if len(newApiUsage) != 0 {
+		t.Fatalf("expected 0 api_usage events on error, got %d", len(newApiUsage))
+	}
+}
+
+func TestRunner_Calibration_SkipsToolLoop_And_OmitsToolsInRequest(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_CALIBRATION_MODE", "1")
+	t.Setenv("AGT_PERSIST_API_PAYLOADS", "1")
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	base := chdirTemp(t)
+	t.Setenv("AGT_ARTIFACTS_DIR", base)
+
+	// Synthetic tool_use in response to assert calibration mode does not execute tools.
+	raw := []byte(`{
+		"role":"assistant",
+		"content":[{"type":"tool_use","id":"t1","name":"list_files","input":{"path":"."}}],
+		"usage":{"input_tokens":1,"output_tokens":1}
+	}`)
+	cli := newClientWithTransport(&headerTransport{status: 200, body: raw})
+	r := runner.New(cli, tools.Registry())
+
+	turnID := "turn-calib"
+	ctx := telemetry.WithTurnID(context.Background(), turnID)
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("please list files"))}
+
+	msg, toolResults, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("nil msg")
+	}
+	if toolResults != nil {
+		t.Fatalf("expected nil toolResults in calibration mode, got %v", toolResults)
+	}
+
+	// No tool_exec events are emitted.
+	toolExec := filterEventsByName(readEventLines(t), "tool_exec")
+	if len(toolExec) != 0 {
+		t.Fatalf("expected 0 tool_exec events in calibration mode, got %d", len(toolExec))
+	}
+
+	// request.json exists and omits tools.
+	b, err := os.ReadFile(filepath.Join(base, "payloads", turnID, "request.json"))
+	if err != nil {
+		t.Fatalf("read request.json: %v", err)
+	}
+	var req struct {
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal(b, &req); err != nil {
+		t.Fatalf("unmarshal request.json: %v\nbody=%s", err, string(b))
+	}
+	if len(req.Tools) != 0 {
+		t.Fatalf("expected tools omitted/empty when calibration is on; got %d tools", len(req.Tools))
+	}
+}
+
+func TestRunner_PrintsAssistantText(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	resp := []byte(`{"role":"assistant","content":[{"type":"text","text":"hello there"}]}`)
+	cli := newClientWithTransport(&headerTransport{status: 200, body: resp})
+	r := runner.New(cli, tools.Registry())
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("say hi"))}
+
+	out := captureStdout(t, func() {
+		_, _, err := r.RunOneStep(context.Background(), provider.DefaultModel, conv)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Claude") || !strings.Contains(out, "hello there") {
+		t.Fatalf("expected assistant text output, got: %q", out)
 	}
 }
