@@ -157,18 +157,57 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		}
 	}
 
-	toolResults := []anthropic.ContentBlockParamUnion{}
+	// Emit api_usage on successful non-streaming responses.
+	// Guard on usage presence (defensive) and observation enabled.
+	if telemetry.ObserveEnabled() {
+		apiVersion := ""
+		if httpResp != nil {
+			apiVersion = httpResp.Header.Get("Anthropic-Version")
+		}
+
+		// Only emit when usage appears present (non-streaming success responses include usage).
+		if msg.Usage.InputTokens != 0 || msg.Usage.OutputTokens != 0 {
+			// Emit with the prepared estimate used for this request and the request's MaxTokens.
+			turnID, _ := telemetry.TurnIDFromContext(ctx)
+			telemetry.Emit("api_usage", map[string]any{
+				"turn_id":                  turnID,
+				"model":                    string(model),
+				"api_version":              apiVersion,
+				"message_id":               msg.ID,
+				"stop_reason":              msg.StopReason,
+				"input_tokens":             msg.Usage.InputTokens,
+				"output_tokens":            msg.Usage.OutputTokens,
+				"prepared_estimated_total": stats.Total,
+				"max_tokens":               params.MaxTokens,
+			})
+		}
+	}
+
+	// Always print assistant text blocks.
 	for _, block := range msg.Content {
 		switch v := block.AsAny().(type) {
 		case anthropic.TextBlock:
 			fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", v.Text)
 		case anthropic.ToolUseBlock:
-			// Pass raw JSON input through to the tool implementation
+			// Tool uses are handled below when not in calibration mode.
+		}
+	}
+
+	// In calibration mode, skip executing tools and end the turn after printing text.
+	if telemetry.CalibrationModeEnabled() {
+		return msg, nil, nil
+	}
+	// Normal path: execute tools when not in calibration mode.
+	toolResults := []anthropic.ContentBlockParamUnion{}
+	for _, block := range msg.Content {
+		switch v := block.AsAny().(type) {
+		case anthropic.ToolUseBlock:
 			input := json.RawMessage(v.JSON.Input.Raw())
 			res := r.execTool(ctx, v.ID, v.Name, input)
 			toolResults = append(toolResults, res)
 		}
 	}
+
 	return msg, toolResults, nil
 }
 
