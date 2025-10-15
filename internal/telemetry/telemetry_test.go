@@ -3,8 +3,9 @@ package telemetry_test
 import (
 	"encoding/json"
 	"math"
-	"os/exec"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,40 +14,40 @@ import (
 )
 
 func TestEmit_Gating(t *testing.T) {
-    // Run in a subprocess so startup-evaluated telemetry config sees AGT_OBSERVE_JSON=0.
-    tmpDir := t.TempDir()
-    cmd := exec.Command(os.Args[0], "-test.run=TestEmitGatingProbe")
-    cmd.Env = append(os.Environ(),
-        "GO_WANT_HELPER_PROCESS=1",
-        "AGT_OBSERVE_JSON=0",
-        // Ensure related flags are cleared so defaults don't flip it on
-        "AGT_CALIBRATION_MODE=",
-        "AGT_PERSIST_API_PAYLOADS=",
-        // Run in tmpDir so child writes here if it were to emit
-        "PWD="+tmpDir,
-    )
-    cmd.Dir = tmpDir
-    out, err := cmd.CombinedOutput()
-    if err != nil {
-        t.Fatalf("subprocess error: %v\n%s", err, string(out))
-    }
-    if !strings.Contains(string(out), "no_file=true") {
-        t.Fatalf("expected no_file=true, got output:\n%s", string(out))
-    }
+	// Run in a subprocess so startup-evaluated telemetry config sees AGT_OBSERVE_JSON=0.
+	tmpDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestEmitGatingProbe")
+	cmd.Env = append(os.Environ(),
+		"GO_WANT_HELPER_PROCESS=1",
+		"AGT_OBSERVE_JSON=0",
+		// Ensure related flags are cleared so defaults don't flip it on
+		"AGT_CALIBRATION_MODE=",
+		"AGT_PERSIST_API_PAYLOADS=",
+		// Run in tmpDir so child writes here if it were to emit
+		"PWD="+tmpDir,
+	)
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("subprocess error: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "no_file=true") {
+		t.Fatalf("expected no_file=true, got output:\n%s", string(out))
+	}
 }
 
 func TestEmitGatingProbe(t *testing.T) {
-    if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
-        return
-    }
-    // Child: attempt an emission with gating off
-    telemetry.Emit("test_event", map[string]any{"foo": "bar"})
-    if _, err := os.Stat(".agent/events.jsonl"); os.IsNotExist(err) {
-        // Print a sentinel for parent to assert
-        println("no_file=true")
-    } else {
-        println("no_file=false")
-    }
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	// Child: attempt an emission with gating off
+	telemetry.Emit("test_event", map[string]any{"foo": "bar"})
+	if _, err := os.Stat(".agent/events.jsonl"); os.IsNotExist(err) {
+		// Print a sentinel for parent to assert
+		println("no_file=true")
+	} else {
+		println("no_file=false")
+	}
 }
 
 func TestEmit_HappyPath(t *testing.T) {
@@ -301,5 +302,38 @@ func TestEmit_ErrorHandling_ReadOnlyFile(t *testing.T) {
 	}
 	if fi.Size() != 0 {
 		t.Fatalf("expected read-only file size 0, got %d", fi.Size())
+	}
+}
+
+func TestEmit_ArtifactsDirRedirection(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AGT_OBSERVE_JSON", "1")
+	t.Setenv("AGT_ARTIFACTS_DIR", tmpDir)
+
+	telemetry.Emit("redir_test", map[string]any{"k": "v"})
+	telemetry.Emit("redir_test", map[string]any{"k": "v2"})
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d", len(lines))
+	}
+
+	if !strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("events.jsonl should be newline-terminated")
 	}
 }
