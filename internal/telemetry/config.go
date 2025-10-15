@@ -33,7 +33,19 @@ func init() {
 func CalibrationModeEnabled() bool { return calibrationModeEnabled }
 
 // ObserveEnabled resports whether JSONL emission was enabled at starup, considering calbiration defaults.
-func ObserveEnabled() bool { return observeEnabled }
+func ObserveEnabled() bool {
+	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
+	if os.Getenv("AGT_OBSERVE_JSON") == "1" {
+		return true
+	}
+	return observeEnabled
+}
 
 // PersistPayloadsEnabled reports whether request and response payload persistence was enabled at startup.
-func PersistPayloadsEnabled() bool { return persistPayloadsEnabled }
+func PersistPayloadsEnabled() bool {
+	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
+	if os.Getenv("AGT_PERSIST_API_PAYLOADS") == "1" {
+		return true
+	}
+	return persistPayloadsEnabled
+}
