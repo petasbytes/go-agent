@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -30,13 +31,16 @@ func Emit(name string, fields map[string]any) {
 		return
 	}
 
-	dir := ".agent"
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "telemetry: mkdir %s: %v\n", dir, err)
+	base := strings.TrimSpace(os.Getenv("AGT_ARTIFACTS_DIR"))
+	if base == "" {
+		base = ".agent"
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "telemetry: mkdir %s: %v\n", base, err)
 		return
 	}
 
-	path := filepath.Join(dir, "events.jsonl")
+	path := filepath.Join(base, "events.jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "telemetry: open %s: %v\n", path, err)
