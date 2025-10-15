@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/petasbytes/go-agent/internal/telemetry"
 	"github.com/petasbytes/go-agent/internal/windowing"
 	"github.com/petasbytes/go-agent/tools"
@@ -93,10 +98,65 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		params.Tools = r.anthropicTools()
 	}
 
-	msg, err := r.Client.Messages.New(ctx, params)
+	// Persist exact request payload if enabled
+	if telemetry.PersistPayloadsEnabled() {
+		// Resolve artifacts base dir
+		base := strings.TrimSpace(os.Getenv("AGT_ARTIFACTS_DIR"))
+		if base == "" {
+			base = ".agent"
+		}
+		// Ensure payloads/{turn_id} exists
+		turnID, _ := telemetry.TurnIDFromContext(ctx)
+		if strings.TrimSpace(turnID) == "" {
+			turnID = "turn-unknown"
+		}
+		dir := filepath.Join(base, "payloads", turnID)
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			// Serialise the exact params as sent
+			if b, err := json.Marshal(params); err == nil {
+				if err := os.WriteFile(filepath.Join(dir, "request.json"), b, 0o644); err != nil {
+					fmt.Fprintf(os.Stderr, "payloads: write request.json: %v\n", err)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "payloads: marshal request params: %v\n", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "payloads: mkdir %s: %v\n", dir, err)
+		}
+	}
+
+	// Capture raw HTTP response and api version
+	var httpResp *http.Response
+	msg, err := r.Client.Messages.New(ctx, params, option.WithResponseInto(&httpResp))
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Persist exact response wire JSON if enabled
+	if telemetry.PersistPayloadsEnabled() && httpResp != nil && httpResp.Body != nil {
+		base := strings.TrimSpace(os.Getenv("AGT_ARTIFACTS_DIR"))
+		if base == "" {
+			base = ".agent"
+		}
+		turnID, _ := telemetry.TurnIDFromContext(ctx)
+		if strings.TrimSpace(turnID) == "" {
+			turnID = "turn-unknown"
+		}
+		dir := filepath.Join(base, "payloads", turnID)
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			// Read entire body then write to file; close safely
+			bodyBytes, readErr := io.ReadAll(httpResp.Body)
+			_ = httpResp.Body.Close()
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "payloads: read response body: %v\n", readErr)
+			} else if err := os.WriteFile(filepath.Join(dir, "response.json"), bodyBytes, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "payloads: write response.json: %v\n", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "payloads: mkdir %s: %v\n", dir, err)
+		}
+	}
+
 	toolResults := []anthropic.ContentBlockParamUnion{}
 	for _, block := range msg.Content {
 		switch v := block.AsAny().(type) {
