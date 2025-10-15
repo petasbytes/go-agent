@@ -53,7 +53,7 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 	// Get turnID from context if present, else generate once for this call.
 	turnID, ok := telemetry.TurnIDFromContext(ctx)
 	if !ok {
-		turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
+		turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
 	}
 
 	ctx = telemetry.WithTurnID(ctx, turnID)
