@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -468,14 +469,14 @@ func TestRunner_TurnID_Propagation(t *testing.T) {
 }
 
 func TestRunner_NoEmit_NoVerbose_WhenFlagsOff(t *testing.T) {
-    t.Setenv("AGT_TOKEN_BUDGET", "10")
-    // Startup-only config: if observation was enabled at process start, we cannot
-    // disable it mid-run. In that case skip this test.
-    if telemetry.ObserveEnabled() {
-        t.Skip("ObserveEnabled at startup; cannot disable mid-run in this process")
-    }
-    // Explicitly request off, though startup config already determined gating.
-    t.Setenv("AGT_OBSERVE_JSON", "0")
+	t.Setenv("AGT_TOKEN_BUDGET", "10")
+	// Startup-only config: if observation was enabled at process start, we cannot
+	// disable it mid-run. In that case skip this test.
+	if telemetry.ObserveEnabled() {
+		t.Skip("ObserveEnabled at startup; cannot disable mid-run in this process")
+	}
+	// Explicitly request off, though startup config already determined gating.
+	t.Setenv("AGT_OBSERVE_JSON", "0")
 	_ = chdirTemp(t)
 
 	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
@@ -495,5 +496,151 @@ func TestRunner_NoEmit_NoVerbose_WhenFlagsOff(t *testing.T) {
 
 	if _, err := os.Stat(".agent"); !os.IsNotExist(err) {
 		t.Fatalf("expected no .agent directory when AGT_OBSERVE_JSON is off")
+	}
+}
+
+func TestRunner_Payloads_PersistEnabled_BothFilesPresent(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_PERSIST_API_PAYLOADS", "1")
+
+	base := chdirTemp(t)
+	t.Setenv("AGT_ARTIFACTS_DIR", base)
+
+	// Canned OK response (any minimal message JSON)
+	raw := []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	fake := &fakeTransport{respStatus: 200, respBody: raw, captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+
+	// Deterministic turn ID for layout assertions
+	ctx := telemetry.WithTurnID(context.Background(), "turn-123")
+
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hi"))}
+	_, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	dir := filepath.Join(base, "payloads", "turn-123")
+	if _, err := os.Stat(filepath.Join(dir, "request.json")); err != nil {
+		t.Fatalf("missing request.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "response.json")); err != nil {
+		t.Fatalf("missing response.json: %v", err)
+	}
+}
+
+func TestRunner_RequestJSON_ContainsSentParams_ToolsIncludedWhenCalibrationOff(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_CALIBRATION_MODE", "0")
+	t.Setenv("AGT_PERSIST_API_PAYLOADS", "1")
+
+	base := chdirTemp(t)
+	t.Setenv("AGT_ARTIFACTS_DIR", base)
+
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+
+	ctx := telemetry.WithTurnID(context.Background(), "turn-abc")
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hello"))}
+
+	_, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	// Read and validate request.json
+	b, err := os.ReadFile(filepath.Join(base, "payloads", "turn-abc", "request.json"))
+	if err != nil {
+		t.Fatalf("read request.json: %v", err)
+	}
+
+	// Minimal struct matching the serialized params we send
+	var req struct {
+		Model     string `json:"model"`
+		MaxTokens int64  `json:"max_tokens"`
+		Messages  []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text,omitempty"`
+			} `json:"content"`
+		} `json:"messages"`
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal(b, &req); err != nil {
+		t.Fatalf("unmarshal request.json: %v\nbody=%s", err, string(b))
+	}
+
+	if req.Model != string(provider.DefaultModel) {
+		t.Errorf("model mismatch: got %q", req.Model)
+	}
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) == 0 || req.Messages[0].Content[0].Text != "hello" {
+		t.Errorf("unexpected messages payload: %+v", req.Messages)
+	}
+	if len(req.Tools) == 0 {
+		t.Errorf("expected tools to be included when calibration is off")
+	}
+}
+
+func TestRunner_Payloads_MkdirFailure_NonFatal(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_PERSIST_API_PAYLOADS", "1")
+
+	// Create a file and point AGT_ARTIFACTS_DIR at it, so base/payloads/... mkdir fails
+	base := chdirTemp(t)
+	badBase := filepath.Join(base, "base")
+	if err := os.WriteFile(badBase, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGT_ARTIFACTS_DIR", badBase)
+
+	fake := &fakeTransport{respStatus: 200, respBody: []byte(`{"content":[],"role":"assistant"}`), captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+
+	ctx := telemetry.WithTurnID(context.Background(), "turn-x")
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("ok"))}
+
+	// Should not panic; files should not exist
+	_, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	// Verify that the payload directory wasn't created under a file base
+	if _, err := os.Stat(filepath.Join(badBase, "payloads", "turn-x", "request.json")); err == nil {
+		t.Fatalf("expected no payload files when mkdir fails")
+	}
+}
+
+func TestRunner_RequestPersists_OnAPIError_ResponseAbsent(t *testing.T) {
+	t.Setenv("AGT_TOKEN_BUDGET", "1000")
+	t.Setenv("AGT_PERSIST_API_PAYLOADS", "1")
+
+	base := chdirTemp(t)
+	t.Setenv("AGT_ARTIFACTS_DIR", base)
+
+	// Transport returns 500
+	fake := &fakeTransport{respStatus: 500, respBody: []byte(`{"error":"boom"}`), captured: &capture{}}
+	cli := newClientWithTransport(fake)
+	r := runner.New(cli, tools.Registry())
+
+	ctx := telemetry.WithTurnID(context.Background(), "turn-err")
+	conv := []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("hi"))}
+
+	_, _, err := r.RunOneStep(ctx, provider.DefaultModel, conv)
+	if err == nil {
+		t.Fatalf("expected error from API 500, got nil")
+	}
+
+	// request.json should exist even on error
+	if _, err := os.Stat(filepath.Join(base, "payloads", "turn-err", "request.json")); err != nil {
+		t.Fatalf("missing request.json on API error: %v", err)
+	}
+	// response.json should be absent on error
+	if _, err := os.Stat(filepath.Join(base, "payloads", "turn-err", "response.json")); err == nil || !os.IsNotExist(err) {
+		t.Fatalf("expected no response.json on API error (err=%v)", err)
 	}
 }
