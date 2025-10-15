@@ -30,7 +30,13 @@ func init() {
 }
 
 // CalibrationModeEnabled reports whether calibration mode was enabled at startup.
-func CalibrationModeEnabled() bool { return calibrationModeEnabled }
+func CalibrationModeEnabled() bool {
+	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
+	if os.Getenv("AGT_CALIBRATION_MODE") == "1" {
+		return true
+	}
+	return calibrationModeEnabled
+}
 
 // ObserveEnabled resports whether JSONL emission was enabled at starup, considering calbiration defaults.
 func ObserveEnabled() bool {
