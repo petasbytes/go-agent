@@ -129,6 +129,9 @@ outer:
 			conv = append(conv, anthropic.NewUserMessage(toolResults...))
 		}
 
+		// Emit local features for this user turn before we cancel ctxTurn
+		telemetry.EmitLocalFeatures(ctxTurn, user)
+
 		// Release resources/timers based on per-turn context.
 		cancelTurn()
 
