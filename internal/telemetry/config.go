@@ -31,27 +31,42 @@ func init() {
 
 // CalibrationModeEnabled reports whether calibration mode was enabled at startup.
 func CalibrationModeEnabled() bool {
-	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
-	if os.Getenv("AGT_CALIBRATION_MODE") == "1" {
-		return true
+	// Allow explicit mid-run overrides in tests: "1" -> true, "0" -> false.
+	if v, ok := os.LookupEnv("AGT_CALIBRATION_MODE"); ok {
+		if v == "1" {
+			return true
+		}
+		if v == "0" {
+			return false
+		}
 	}
 	return calibrationModeEnabled
 }
 
-// ObserveEnabled resports whether JSONL emission was enabled at starup, considering calbiration defaults.
+// ObserveEnabled reports whether JSONL emission was enabled at startup, considering calibration defaults.
 func ObserveEnabled() bool {
-	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
-	if os.Getenv("AGT_OBSERVE_JSON") == "1" {
-		return true
+	// Allow explicit mid-run overrides in tests: "1" -> true, "0" -> false.
+	if v, ok := os.LookupEnv("AGT_OBSERVE_JSON"); ok {
+		if v == "1" {
+			return true
+		}
+		if v == "0" {
+			return false
+		}
 	}
 	return observeEnabled
 }
 
 // PersistPayloadsEnabled reports whether request and response payload persistence was enabled at startup.
 func PersistPayloadsEnabled() bool {
-	// Preserve startup-evaluated default, but allow tests to enable mid-run via env override.
-	if os.Getenv("AGT_PERSIST_API_PAYLOADS") == "1" {
-		return true
+	// Allow explicit mid-run overrides in tests: "1" -> true, "0" -> false.
+	if v, ok := os.LookupEnv("AGT_PERSIST_API_PAYLOADS"); ok {
+		if v == "1" {
+			return true
+		}
+		if v == "0" {
+			return false
+		}
 	}
 	return persistPayloadsEnabled
 }
