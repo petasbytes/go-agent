@@ -696,7 +696,6 @@ func TestRunner_ApiUsage_HappyPath_EventFields(t *testing.T) {
 	cli := newClientWithTransport(&headerTransport{
 		status:  200,
 		body:    raw,
-		headers: map[string]string{"Anthropic-Version": "2023-06-01"},
 	})
 	r := runner.New(cli, tools.Registry())
 
@@ -724,7 +723,7 @@ func TestRunner_ApiUsage_HappyPath_EventFields(t *testing.T) {
 	if m["model"] != string(provider.DefaultModel) {
 		t.Errorf("model mismatch: %v", m["model"])
 	}
-	if m["api_version"] != "2023-06-01" {
+	if m["api_version"] != provider.APIVersion {
 		t.Errorf("api_version mismatch: %v", m["api_version"])
 	}
 	if m["message_id"] != "msg_abc" {
