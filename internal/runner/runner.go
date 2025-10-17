@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/petasbytes/go-agent/internal/provider"
 	"github.com/petasbytes/go-agent/internal/telemetry"
 	"github.com/petasbytes/go-agent/internal/windowing"
 	"github.com/petasbytes/go-agent/tools"
@@ -125,7 +126,7 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 		}
 	}
 
-	// Capture raw HTTP response and api version
+	// Capture raw HTTP response for payload persistence
 	var httpResp *http.Response
 	msg, err := r.Client.Messages.New(ctx, params, option.WithResponseInto(&httpResp))
 	if err != nil {
@@ -160,14 +161,10 @@ func (r *Runner) RunOneStep(ctx context.Context, model anthropic.Model, conv []a
 	// Emit api_usage on successful non-streaming responses.
 	// Guard on usage presence (defensive) and observation enabled.
 	if telemetry.ObserveEnabled() {
-		apiVersion := ""
-		if httpResp != nil {
-			apiVersion = httpResp.Header.Get("Anthropic-Version")
-		}
+		apiVersion := provider.APIVersion
 
 		// Only emit when usage appears present (non-streaming success responses include usage).
 		if msg.Usage.InputTokens != 0 || msg.Usage.OutputTokens != 0 {
-			// Emit with the prepared estimate used for this request and the request's MaxTokens.
 			turnID, _ := telemetry.TurnIDFromContext(ctx)
 			telemetry.Emit("api_usage", map[string]any{
 				"turn_id":                  turnID,
