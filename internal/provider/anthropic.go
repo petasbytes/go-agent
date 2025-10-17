@@ -10,5 +10,5 @@ func NewAnthropicClient() *anthropic.Client {
 	return &c
 }
 
-// DefaultModel centralises the default Anthropic model for the project
 const DefaultModel = anthropic.ModelClaude3_7SonnetLatest
+const APIVersion = "2023-06-01"
